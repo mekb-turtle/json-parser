@@ -1,9 +1,12 @@
-#include <stdio.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
 #include "./json.h"
 #define BLOCK 1024
+char *syntax_chars     = ",{}[]";
+char *whitespace_chars = " \t\n\r\v";
+char *number_chars     = "0123456789.-e";
 bool contains_char(char c, char *chars) {
 	if (c < 0 || c > 127) return 0;
 	for (; *chars; ++chars) {
@@ -97,7 +100,7 @@ char *parse_string(FILE *fp) {
 	size_t in_len = 0;
 	size_t in_real_len = 0;
 	for (;;) {
-		char c = fgetc(fp);
+		int c = fgetc(fp);
 		if (c < 0) return NULL;
 		if (c == '"') {
 			if (!in) in = malloc(1);
@@ -116,9 +119,9 @@ char *parse_string(FILE *fp) {
 }
 struct json_number parse_number(FILE *fp) {
 	struct json_number number;
-	number.type = NONE;
+	number.type = NUMBER_NONE;
 	for (;;) {
-		char c = fgetc(fp);
+		int c = fgetc(fp);
 		if (c < 0) return number;
 		if (contains_char(c, number_chars)) {
 		} else if (is_syntax_or_whitespace(c)) {
@@ -133,18 +136,68 @@ struct json_number parse_number(FILE *fp) {
 struct json_value parse_value(FILE *fp, enum json_value_type type) {
 	struct json_value j;
 	j.type = type;
+	if (type == NONE) return j;
 	switch (type) {
 		case STRING:
 			j.string = parse_string(fp);
+			if (!j.string) j.type = NONE;
 			break;
 		case ARRAY:
-			j.array = NULL;
+			struct json_array *array = malloc(sizeof(struct json_array));
+			if (!array) break;
+			struct json_value *values = NULL;
+			size_t array_len = 0;
+			size_t array_real_len = 0;
+			bool needs_comma = 0;
+			for (;;) {
+				int c = fgetc(fp);
+				if (c < 0) { j.type = NONE; break; }
+				if (c == ']') {
+					if (values == NULL) {
+						values = malloc(sizeof(struct json_value));
+						if (values) values[0].type = NONE;
+					}
+					break;
+				}
+				if (c == '}') {
+					free(values); free(array);
+					j.type = NONE; break;
+				} else if (needs_comma != (c == ',')) {
+					free(values); free(array);
+					j.type = NONE; break;
+				} else if (c == ',' && needs_comma) {
+					needs_comma = 0;
+				} else if (!contains_char(c, whitespace_chars)) {
+					ungetc(c, fp);
+					struct json_value v = parse_value(fp, get_type(fp));
+					if (v.type == NONE) {
+						free(values); free(array);
+						j.type = NONE; break;
+					}
+					++array_len;
+					if (array_len >= array_real_len) {
+						array_real_len += BLOCK;
+						values = realloc(values, sizeof(struct json_value) * (array_real_len + 1));
+						if (!values) {
+							free(values); free(array);
+							j.type = NONE; break;
+						}
+					}
+					values[array_len-1] = v;
+					needs_comma = 1;
+				}
+			}
+			if (j.type == NONE || j.type == NONE) break;
+			values[array_len].type = NONE;
+			array->values = values;
+			j.array = array;
 			break;
 		case OBJECT:
 			j.object = NULL;
 			break;
 		case NUMBER:
 			j.number = parse_number(fp);
+			if (j.number.type == NUMBER_NONE) j.type = NONE;
 			break;
 		default:
 			break;
@@ -152,66 +205,82 @@ struct json_value parse_value(FILE *fp, enum json_value_type type) {
 	return j;
 }
 struct json_value parse_json(FILE *fp) {
-	enum json_value_type type = NONE;
-	type = get_type(fp);
-	struct json_value v;
-	v.type = NONE;
-	if (type != NONE) v = parse_value(fp, type);
-	return v;
+	for (;;) {
+		int c = fgetc(fp);
+		if (c < 0) {
+			struct json_value v;
+			v.type = NONE;
+			return v;
+		}
+		if (!contains_char(c, whitespace_chars)) {
+			ungetc(c, fp);
+			break;
+		}
+	}
+	return parse_value(fp, get_type(fp));
 }
 bool print_json(struct json_value v, int indent) {
 #define INDENT() { for (int i = 0; i < indent; ++i) { fputc('\t', stdout); } }
+#define PUTS(x) fputs(x, stdout)
+#define PUTC(x) fputc(x, stdout)
 	INDENT();
 	switch (v.type) {
-		case NONE:
-			printf("error\n");
-			return 0;
 		case NULL_:
-			printf("null\n");
+			PUTS("null");
 			return 1;
 		case UNDEFINED:
-			printf("undefined\n");
+			PUTS("undefined");
 			return 1;
 		case TRUE:
-			printf("true\n");
+			PUTS("true");
 			return 1;
 		case FALSE:
-			printf("false\n");
+			PUTS("false");
 			return 1;
 		case NUMBER:
 			switch (v.number.type) {
 				case NUMBER_LONG:
-					printf("%li\n", v.number.long_);
+					printf("%li", v.number.long_);
 					return 1;
 				case NUMBER_DOUBLE:
-					printf("%lf\n", v.number.double_);
+					printf("%lf", v.number.double_);
 					return 1;
 				default:
-					printf("error\n");
+					PUTS("error");
 					return 0;
 			}
 		case NAN:
-			printf("NaN\n");
+			PUTS("NaN");
 			return 1;
 		case INFINITY:
-			printf("Infinity\n");
+			PUTS("Infinity");
 			return 1;
 		case ARRAY:
-			printf("[\n");
-			printf("]\n");
+			if (v.array->values->type != NONE) {
+				PUTS("[\n");
+				for (int u=0; v.array->values->type != NONE; ++v.array->values,++u) {
+					print_json(*v.array->values, indent+1);
+					if ((v.array->values+1)->type != NONE) PUTC(',');
+					PUTC('\n');
+				}
+				PUTC(']');
+			} else {
+				PUTS("[]");
+			}
 			return 1;
 		case OBJECT:
-			printf("{\n");
-			printf("}\n");
+			PUTC('{');
+			PUTC('}');
 			return 1;
 		case STRING:
-			printf("\"%s\"\n", v.string);
+			printf("\"%s\"", v.string);
 			return 1;
+		case NONE:
+			PUTS("error");
+			return 0;
+		default:
+			PUTS("unknown type");
+			return 0;
 	}
-	return 0;
-}
-int main() {
-	struct json_value v = parse_json(stdin);
-	print_json(v, 0);
 	return 0;
 }

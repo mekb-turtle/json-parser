@@ -2,9 +2,9 @@ CC=cc
 CFLAGS=-Wall -O2
 LFLAGS=-lm -s
 
-OBJS=json.o
+OBJS=json.o main.o
 
-TARGET=json
+TARGET=main
 
 .PHONY: all clean
 

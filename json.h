@@ -1,9 +1,10 @@
 #include <stdbool.h>
+#include <stdio.h>
 struct json_object;
 struct json_value;
 struct json_number {
 	enum json_number_type {
-		NUMBER_LONG, NUMBER_DOUBLE
+		NUMBER_NONE, NUMBER_LONG, NUMBER_DOUBLE
 	} type;
 	union {
 		long int long_;
@@ -30,6 +31,11 @@ struct json_object {
 struct json_array {
 	struct json_value *values;
 };
-char *syntax_chars     = ",{}[]";
-char *whitespace_chars = " \t\n\r\v";
-char *number_chars     = "0123456789.-";
+bool contains_char(char c, char *chars);
+bool is_syntax_or_whitespace(char c);
+enum json_value_type get_type(FILE *fp);
+char *parse_string(FILE *fp);
+struct json_number parse_number(FILE *fp);
+struct json_value parse_value(FILE *fp, enum json_value_type type);
+struct json_value parse_json(FILE *fp);
+bool print_json(struct json_value v, int indent);
