@@ -2,11 +2,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
+#include <string.h>
 #include "./json.h"
 #define BLOCK 1024
+#define MAX_NUMBER_SIZE 16
 char *syntax_chars     = ",{}[]";
 char *whitespace_chars = " \t\n\r\v";
-char *number_chars     = "0123456789.-e";
+char *number_chars     = "0123456789.-+e";
 bool contains_char(char c, char *chars) {
 	if (c < 0 || c > 127) return 0;
 	for (; *chars; ++chars) {
@@ -96,42 +98,113 @@ enum json_value_type get_type(FILE *fp) {
 	return NONE;
 }
 char *parse_string(FILE *fp) {
-	char *in = NULL;
-	size_t in_len = 0;
-	size_t in_real_len = 0;
+	char *string = NULL;
+	size_t string_len = 0;
+	size_t string_real_len = 0;
 	for (;;) {
 		int c = fgetc(fp);
 		if (c < 0) return NULL;
 		if (c == '"') {
-			if (!in) in = malloc(1);
-			if (in) in[in_len] = '\0';
-			return in;
+			if (!string) string = malloc(1);
+			if (string) string[string_len] = '\0';
+			return string;
 		}
-		++in_len;
-		if (in_len >= in_real_len) {
-			in_real_len += BLOCK;
-			in = realloc(in, in_real_len + 1);
-			if (!in) return NULL;
+		++string_len;
+		if (string_len >= string_real_len) {
+			string_real_len += BLOCK;
+			string = realloc(string, string_real_len + 1);
+			if (!string) return NULL;
 		}
-		in[in_len-1] = c;
+		string[string_len-1] = c;
 	}
 	return NULL;
 }
 struct json_number parse_number(FILE *fp) {
 	struct json_number number;
 	number.type = NUMBER_NONE;
+	bool exponent = 0;
+	bool point = 0;
+	bool negative, negativee, positive, positivee = 0;
+	bool can_sign = 1;
+	// n = number
+	// np = number after decimal point
+	// ne = second part of exponent
+	// nep = second part of exponent after decimal point
+	char *n = NULL, *np = NULL, *ne = NULL, *nep = NULL;
+	size_t nl   = 0,
+	       nlp  = 0,
+	       nle  = 0,
+	       nlep = 0;
+	// TODO: make code less messy
+#define END() { free(n); free(np); free(ne); free(nep); return number; }
+#define ADD(c, a, len) {\
+		if (len >= MAX_NUMBER_SIZE) END();\
+		++len;\
+		if (!a) {\
+			a = malloc(MAX_NUMBER_SIZE)\
+			if (!a) END();\
+		}\
+		a[len-1] = c; }
 	for (;;) {
 		int c = fgetc(fp);
-		if (c < 0) return number;
+		if (c < 0) break;
 		if (contains_char(c, number_chars)) {
+			if (c >= '0' && c <= '9') {
+				if (exponent && point) {
+					ADD(c, nep, nlep);
+				} else if (exponent) {
+					ADD(c, ne,  nle);
+				} else if (point) {
+					ADD(c, np,  nlp);
+				} else {
+					ADD(c, n,   nl);
+				}
+				can_sign = 0;
+			} else if (c == '-' || c == '+') {
+				if (!can_sign) END();
+				if (exponent) {
+					if (negativee || positivee) END();
+					if (c == '-') negativee = 1; else positivee = 1;
+				} else {
+					if (negative  || positive)  END();
+					if (c == '-') negative  = 1; else positive  = 1;
+				}
+			} else if (c == 'e') {
+				if (exponent) END();
+				can_sign = 1;
+				exponent = 1;
+				point = 0;
+			} else if (c == '.') {
+				if (exponent) {
+					if (!ne) ADD('0', ne, nle);
+				} else {
+					if (!n)  ADD('0', n,  nl);
+				}
+				if (point) END();
+				point = 1;
+			}
 		} else if (is_syntax_or_whitespace(c)) {
 			ungetc(c, fp);
-			number.long_ = 1;
-			number.type = NUMBER_LONG;
-			return number;
-		} else return number;
+			break;
+		} else {
+			END();
+		}
 	}
-	return number;
+	size_t i;
+	char *n_ = n, *ne_ = ne;
+	if (n)   { for (i = 0; n [i] == '0'; ++i, ++n_,  --nl);  }
+	if (ne)  { for (i = 0; ne[i] == '0'; ++i, ++ne_, --nle); }
+	if (np)  { while (np [nlp -1] == '0') --nlp;  }
+	if (nep) { while (nep[nlep-1] == '0') --nlep; }
+	if (n_)  n_  [nl]   = '\0';
+	if (ne_) ne_ [nle]  = '\0';
+	if (np)  np  [nlp]  = '\0';
+	if (nep) nep [nlep] = '\0';
+	printf(":   %s\n", n_);
+	printf("e:  %s\n", ne_);
+	printf("p:  %s\n", np);
+	printf("ep: %s\n", nep);
+	END();
 }
 struct json_value parse_value(FILE *fp, enum json_value_type type) {
 	struct json_value j;
