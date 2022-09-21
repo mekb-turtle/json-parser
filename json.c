@@ -167,6 +167,7 @@ struct json_number parse_number(FILE *fp) {
 					if (c == '-') negative  = 1; else positive  = 1;
 				}
 			} else if (c == 'e') {
+				if (point && !np) END();
 				if (exponent) END();
 				can_sign = 1;
 				exponent = 1;
@@ -187,6 +188,8 @@ struct json_number parse_number(FILE *fp) {
 			END();
 		}
 	}
+	if (exponent && !ne) END();
+	if (point && !np) END();
 	size_t j;
 	char *n_ = n, *ne_ = ne;
 	if (n)   { for (j = 0; n [j] == '0'; ++j, ++n_,  --nl);  }
@@ -196,18 +199,26 @@ struct json_number parse_number(FILE *fp) {
 	if (n_)  n_  [nl]   = '\0';
 	if (ne_) ne_ [nle]  = '\0';
 	if (np)  np  [nlp]  = '\0';
-	long int i = 0, ie = 0, ip = 0;
+	long int i = 0, ie = 0, ip = 0, ie2 = 0;
 	if (n_)  i  = strtol(n_,  NULL, 10);
 	if (ne_) ie = strtol(ne_, NULL, 10);
 	if (np)  ip = strtol(np,  NULL, 10);
 	bool can_be_int = 1;
 	if (np && (!ne_ || nlp > ie)) can_be_int = 0;
-	i *= 10**ie;
-	if (ip) ip *= 10**(ie-nlp);
-	printf("%li %li\n", i, ip);
-	printf(":   %s\n", n_);
-	printf("e:  %s\n", ne_);
-	printf("p:  %s\n", np);
+	if (can_be_int) {
+		for (ie2 = ie-nlp; ie2 > 0; --ie2) ip *= 10;
+		for (; ie > 0; --ie) i *= 10;
+		number.long_ = ip + i;
+		number.type = NUMBER_LONG;
+	} else {
+		double f = i;
+		double fp = ip;
+		nlp -= ie;
+		for (; nlp > 0; --nlp) fp /= 10;
+		for (; ie  > 0; --ie)  f  *= 10;
+		number.double_ = f + fp;
+		number.type = NUMBER_DOUBLE;
+	}
 	END();
 }
 struct json_value parse_value(FILE *fp, enum json_value_type type) {
