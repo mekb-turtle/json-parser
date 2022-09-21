@@ -129,19 +129,18 @@ struct json_number parse_number(FILE *fp) {
 	// n = number
 	// np = number after decimal point
 	// ne = second part of exponent
-	// nep = second part of exponent after decimal point
-	char *n = NULL, *np = NULL, *ne = NULL, *nep = NULL;
+	// npe = second part of exponent after decimal point
+	char *n = NULL, *np = NULL, *ne = NULL;
 	size_t nl   = 0,
 	       nlp  = 0,
-	       nle  = 0,
-	       nlep = 0;
+	       nle  = 0;
 	// TODO: make code less messy
-#define END() { free(n); free(np); free(ne); free(nep); return number; }
+#define END() { free(n); free(np); free(ne); return number; }
 #define ADD(c, a, len) {\
 		if (len >= MAX_NUMBER_SIZE) END();\
 		++len;\
 		if (!a) {\
-			a = malloc(MAX_NUMBER_SIZE)\
+			a = malloc(MAX_NUMBER_SIZE);\
 			if (!a) END();\
 		}\
 		a[len-1] = c; }
@@ -150,9 +149,7 @@ struct json_number parse_number(FILE *fp) {
 		if (c < 0) break;
 		if (contains_char(c, number_chars)) {
 			if (c >= '0' && c <= '9') {
-				if (exponent && point) {
-					ADD(c, nep, nlep);
-				} else if (exponent) {
+				if (exponent) {
 					ADD(c, ne,  nle);
 				} else if (point) {
 					ADD(c, np,  nlp);
@@ -176,13 +173,13 @@ struct json_number parse_number(FILE *fp) {
 				point = 0;
 			} else if (c == '.') {
 				if (exponent) {
-					if (!ne) ADD('0', ne, nle);
+					END();
 				} else {
-					if (!n)  ADD('0', n,  nl);
+					if (point) END();
+					if (!n) ADD('0', n,  nl);
+					point = 1;
 				}
-				if (point) END();
-				point = 1;
-			}
+			} else END();
 		} else if (is_syntax_or_whitespace(c)) {
 			ungetc(c, fp);
 			break;
@@ -190,20 +187,27 @@ struct json_number parse_number(FILE *fp) {
 			END();
 		}
 	}
-	size_t i;
+	size_t j;
 	char *n_ = n, *ne_ = ne;
-	if (n)   { for (i = 0; n [i] == '0'; ++i, ++n_,  --nl);  }
-	if (ne)  { for (i = 0; ne[i] == '0'; ++i, ++ne_, --nle); }
+	if (n)   { for (j = 0; n [j] == '0'; ++j, ++n_,  --nl);  }
+	if (ne)  { for (j = 0; ne[j] == '0'; ++j, ++ne_, --nle); }
 	if (np)  { while (np [nlp -1] == '0') --nlp;  }
-	if (nep) { while (nep[nlep-1] == '0') --nlep; }
+	if (nlp == 1 && np [0] == '0') { free(np); np  = NULL; nlp = 0; }
 	if (n_)  n_  [nl]   = '\0';
 	if (ne_) ne_ [nle]  = '\0';
 	if (np)  np  [nlp]  = '\0';
-	if (nep) nep [nlep] = '\0';
+	long int i = 0, ie = 0, ip = 0;
+	if (n_)  i  = strtol(n_,  NULL, 10);
+	if (ne_) ie = strtol(ne_, NULL, 10);
+	if (np)  ip = strtol(np,  NULL, 10);
+	bool can_be_int = 1;
+	if (np && (!ne_ || nlp > ie)) can_be_int = 0;
+	i *= 10**ie;
+	if (ip) ip *= 10**(ie-nlp);
+	printf("%li %li\n", i, ip);
 	printf(":   %s\n", n_);
 	printf("e:  %s\n", ne_);
 	printf("p:  %s\n", np);
-	printf("ep: %s\n", nep);
 	END();
 }
 struct json_value parse_value(FILE *fp, enum json_value_type type) {
