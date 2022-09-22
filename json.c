@@ -6,9 +6,10 @@
 #include "./json.h"
 #define BLOCK 1024
 #define MAX_NUMBER_SIZE 16
-char *syntax_chars     = ",{}[]";
-char *whitespace_chars = " \t\n\r\v";
-char *number_chars     = "0123456789.-+e";
+char *syntax_chars            = ",{}[]";
+char *whitespace_chars        = "\t\n\r\v ";
+char *string_disallowed_chars = "\0\n\r";
+char *number_chars            = "0123456789.-+e";
 bool contains_char(char c, char *chars) {
 	if (c < 0 || c > 127) return 0;
 	for (; *chars; ++chars) {
@@ -101,6 +102,7 @@ char *parse_string(FILE *fp) {
 	char *string = NULL;
 	size_t string_len = 0;
 	size_t string_real_len = 0;
+	int a, a1, a2;
 	for (;;) {
 		int c = fgetc(fp);
 		if (c < 0) return NULL;
@@ -108,16 +110,54 @@ char *parse_string(FILE *fp) {
 			if (!string) string = malloc(1);
 			if (string) string[string_len] = '\0';
 			return string;
-		}
-		++string_len;
-		if (string_len >= string_real_len) {
-			string_real_len += BLOCK;
-			string = realloc(string, string_real_len + 1);
-			if (!string) return NULL;
-		}
-		string[string_len-1] = c;
+		} else if (c == '\\') {
+			c = fgetc(fp);
+			if (c < 0) return NULL;
+			bool e = 0, d = 0;
+			switch (c) {
+				case '"':
+				case '\\':
+				case '/':
+					break;
+				case '0': c = '\x00'; break;
+				case 'b': c = '\x08'; break;
+				case 't': c = '\x09'; break;
+				case 'n': c = '\x0a'; break;
+				case 'v': c = '\x0b'; break;
+				case 'f': c = '\x0c'; break;
+				case 'r': c = '\x0d'; break;
+				case 'e': c = '\x1b'; break;
+#define ADD(c) { ++string_len;\
+					if (string_len >= string_real_len) {\
+						string_real_len += BLOCK;\
+						string = realloc(string, string_real_len + 1);\
+						if (!string) return NULL;\
+					}\
+					string[string_len-1] = c; }
+#define C(c, d) { c = fgetc(fp);\
+					if (c >= '0' && c <= '9') d = c - '0';\
+					else if (c >= 'a' && c <= 'f') d = c - 'a' + 0xa;\
+					else { e = 1; break; } }
+#define D() { C(a, a1); C(a, a2); ADD(a1 << 4 | a2); }
+				/*
+				case 'U':
+					D();
+					D();
+				case 'u':
+					D();
+				*/
+				case 'x':
+					D();
+					d = 1;
+					break;
+				default: e = 1; break;
+			}
+			if (e) break;
+			if (d) continue;
+		} else if (contains_char(c, string_disallowed_chars)) break;
+		ADD(c);
 	}
-	return NULL;
+	free(string); return NULL;
 }
 struct json_number parse_number(FILE *fp) {
 	struct json_number number;
@@ -136,7 +176,7 @@ struct json_number parse_number(FILE *fp) {
 	       nle  = 0;
 	// TODO: make code less messy
 #define END() { free(n); free(np); free(ne); return number; }
-#define ADD(c, a, len) {\
+#define ADD_NUM(c, a, len) {\
 		if (len >= MAX_NUMBER_SIZE) END();\
 		++len;\
 		if (!a) {\
@@ -150,11 +190,11 @@ struct json_number parse_number(FILE *fp) {
 		if (contains_char(c, number_chars)) {
 			if (c >= '0' && c <= '9') {
 				if (exponent) {
-					ADD(c, ne,  nle);
+					ADD_NUM(c, ne,  nle);
 				} else if (point) {
-					ADD(c, np,  nlp);
+					ADD_NUM(c, np,  nlp);
 				} else {
-					ADD(c, n,   nl);
+					ADD_NUM(c, n,   nl);
 				}
 				can_sign = 0;
 			} else if (c == '-' || c == '+') {
@@ -177,7 +217,7 @@ struct json_number parse_number(FILE *fp) {
 					END();
 				} else {
 					if (point) END();
-					if (!n) ADD('0', n,  nl);
+					if (!n) ADD_NUM('0', n,  nl);
 					point = 1;
 				}
 			} else END();
@@ -225,6 +265,7 @@ struct json_value parse_value(FILE *fp, enum json_value_type type) {
 	struct json_value j;
 	j.type = type;
 	if (type == NONE) return j;
+	bool needs_comma;
 	switch (type) {
 		case STRING:
 			j.string = parse_string(fp);
@@ -236,52 +277,122 @@ struct json_value parse_value(FILE *fp, enum json_value_type type) {
 			struct json_value *values = NULL;
 			size_t array_len = 0;
 			size_t array_real_len = 0;
-			bool needs_comma = 0;
+			needs_comma = 0;
+			j.type = NONE;
+#define ARRAY_BREAK() {\
+				free(values); free(array);\
+				values = NULL; array = NULL; break; }
 			for (;;) {
 				int c = fgetc(fp);
-				if (c < 0) { j.type = NONE; break; }
-				if (c == ']') {
+				if (c < 0) ARRAY_BREAK();
+				if (contains_char(c, whitespace_chars)) {
+					continue;
+				} else if (c == ']') {
+					if (!needs_comma && array_len > 0) ARRAY_BREAK();
 					if (values == NULL) {
 						values = malloc(sizeof(struct json_value));
 						if (values) values[0].type = NONE;
+					} else {
+						values[array_len].type = NONE;
 					}
 					break;
-				}
-				if (c == '}') {
-					free(values); free(array);
-					j.type = NONE; break;
+				} else if (c == '}') {
+					ARRAY_BREAK();
 				} else if (needs_comma != (c == ',')) {
-					free(values); free(array);
-					j.type = NONE; break;
+					ARRAY_BREAK();
 				} else if (c == ',' && needs_comma) {
 					needs_comma = 0;
-				} else if (!contains_char(c, whitespace_chars)) {
+				} else {
 					ungetc(c, fp);
 					struct json_value v = parse_value(fp, get_type(fp));
-					if (v.type == NONE) {
-						free(values); free(array);
-						j.type = NONE; break;
-					}
+					if (v.type == NONE) ARRAY_BREAK();
 					++array_len;
 					if (array_len >= array_real_len) {
 						array_real_len += BLOCK;
 						values = realloc(values, sizeof(struct json_value) * (array_real_len + 1));
-						if (!values) {
-							free(values); free(array);
-							j.type = NONE; break;
-						}
+						if (!values) ARRAY_BREAK();
 					}
 					values[array_len-1] = v;
 					needs_comma = 1;
 				}
 			}
-			if (j.type == NONE || j.type == NONE) break;
+			if (!array || !values) break;
+			j.type = ARRAY;
 			values[array_len].type = NONE;
 			array->values = values;
 			j.array = array;
 			break;
 		case OBJECT:
-			j.object = NULL;
+			struct json_object *object = malloc(sizeof(struct json_object));
+			if (!object) break;
+			struct json_object_entry *entries = NULL;
+			size_t object_len = 0;
+			size_t object_real_len = 0;
+			needs_comma = 0;
+			bool needs_colon = 0;
+			bool is_value = 0;
+			j.type = NONE;
+#define OBJECT_BREAK() {\
+				free(entries); free(object);\
+				entries = NULL; object = NULL; break; }
+			for (;;) {
+				int c = fgetc(fp);
+				if (c < 0) OBJECT_BREAK();
+				if (contains_char(c, whitespace_chars)) {
+					continue;
+				} else if (c == '}') {
+					if (needs_colon || is_value) OBJECT_BREAK();
+					if (!needs_comma && object_len > 0) OBJECT_BREAK();
+					if (entries == NULL) {
+						entries = malloc(sizeof(struct json_object_entry));
+						if (entries) entries[0].value.type = NONE;
+					} else {
+						entries[object_len].value.type = NONE;
+					}
+					break;
+				} else if (c == ']') {
+					OBJECT_BREAK();
+				} else if (needs_colon != (c == ':')) { 
+					OBJECT_BREAK();
+				} else if (c == ':') {
+					is_value = 1;
+					needs_colon = 0;
+				} else if (needs_comma != (c == ',')) {
+					OBJECT_BREAK();
+				} else if (c == ',' && needs_comma) {
+					needs_comma = 0;
+				} else if (!contains_char(c, whitespace_chars)) {
+					ungetc(c, fp);
+					enum json_value_type type = get_type(fp);
+					struct json_value v;
+					if (!is_value) {
+						if (type != STRING) OBJECT_BREAK();
+					}
+					v = parse_value(fp, type);
+					if (v.type == NONE) OBJECT_BREAK();
+					if (is_value) {
+						entries[object_len-1].value = v;
+						needs_comma = 1;
+						needs_colon = 0;
+						is_value = 0;
+					} else {
+						++object_len;
+						if (object_len >= object_real_len) {
+							object_real_len += BLOCK;
+							entries = realloc(entries, sizeof(struct json_object_entry) * (object_real_len + 1));
+							if (!entries) OBJECT_BREAK();
+						}
+						entries[object_len-1].key = v.string;
+						needs_colon = 1;
+						printf("here\n");
+					}
+				}
+			}
+			if (!object || !entries) break;
+			j.type = OBJECT;
+			entries[object_len].value.type = NONE;
+			object->entries = entries;
+			j.object = object;
 			break;
 		case NUMBER:
 			j.number = parse_number(fp);
@@ -307,10 +418,39 @@ struct json_value parse_json(FILE *fp) {
 	}
 	return parse_value(fp, get_type(fp));
 }
-bool print_json(struct json_value v, int indent) {
-#define INDENT() { for (int i = 0; i < indent; ++i) { fputc('\t', stdout); } }
 #define PUTS(x) fputs(x, stdout)
 #define PUTC(x) fputc(x, stdout)
+void print_string(char *str) {
+	for (; *str; ++str) {
+		switch (*str) {
+			case '"':
+			case '\\':
+				printf("\\%c", *str); break;
+			case '\x00':
+				PUTS("\\0"); break;
+			case '\x08':
+				PUTS("\\b"); break;
+			case '\x09':
+				PUTS("\\t"); break;
+			case '\x0a':
+				PUTS("\\n"); break;
+			case '\x0b':
+				PUTS("\\v"); break;
+			case '\x0c':
+				PUTS("\\f"); break;
+			case '\x0d':
+				PUTS("\\r"); break;
+			default:
+				if (*str < '\x20' || (*str >= '\x7f' && *str <= '\xa0') || *str == '\xad')
+					printf("\\%02x", *str);
+				else
+					PUTC(*str);
+				break;
+		}
+	}
+}
+bool print_json(struct json_value v, int indent) {
+#define INDENT() { for (int i = 0; i < indent; ++i) { fputc('\t', stdout); } }
 	INDENT();
 	switch (v.type) {
 		case NULL_:
@@ -344,24 +484,38 @@ bool print_json(struct json_value v, int indent) {
 			PUTS("Infinity");
 			return 1;
 		case ARRAY:
-			if (v.array->values->type != NONE) {
+			if (v.array->values[0].type != NONE) {
 				PUTS("[\n");
-				for (int u=0; v.array->values->type != NONE; ++v.array->values,++u) {
-					print_json(*v.array->values, indent+1);
-					if ((v.array->values+1)->type != NONE) PUTC(',');
+				for (size_t i = 0; v.array->values[i].type != NONE; ++i) {
+					print_json(v.array->values[i], indent+1);
+					if (v.array->values[i+1].type != NONE) PUTC(',');
 					PUTC('\n');
 				}
+				INDENT();
 				PUTC(']');
 			} else {
 				PUTS("[]");
 			}
 			return 1;
 		case OBJECT:
-			PUTC('{');
-			PUTC('}');
+			if (v.object->entries[0].value.type != NONE) {
+				PUTS("{\n");
+				for (size_t i = 0; v.object->entries[i].value.type != NONE; ++i) {
+					print_json(v.object->entries[i].value, indent+1);
+					print_json(v.object->entries[i].value, indent+1);
+					if (v.object->entries[i+1].value.type != NONE) PUTC(',');
+					PUTC('\n');
+				}
+				INDENT();
+				PUTC('}');
+			} else {
+				PUTS("{}");
+			}
 			return 1;
 		case STRING:
-			printf("\"%s\"", v.string);
+			PUTC('"');
+			print_string(v.string);
+			PUTC('"');
 			return 1;
 		case NONE:
 			PUTS("error");
