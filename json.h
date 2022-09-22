@@ -30,4 +30,4 @@ struct json_array {
 	struct json_value *values;
 };
 struct json_value parse_json(FILE *fp);
-bool print_json(struct json_value v, int indent);
+bool print_json(struct json_value v, int indent, bool no_indent);

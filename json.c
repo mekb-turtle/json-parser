@@ -421,6 +421,7 @@ struct json_value parse_json(FILE *fp) {
 #define PUTS(x) fputs(x, stdout)
 #define PUTC(x) fputc(x, stdout)
 void print_string(char *str) {
+	PUTC('"');
 	for (; *str; ++str) {
 		switch (*str) {
 			case '"':
@@ -448,10 +449,11 @@ void print_string(char *str) {
 				break;
 		}
 	}
+	PUTC('"');
 }
-bool print_json(struct json_value v, int indent) {
-#define INDENT() { for (int i = 0; i < indent; ++i) { fputc('\t', stdout); } }
-	INDENT();
+bool print_json(struct json_value v, int indent, bool no_indent) {
+#define INDENT(p) { for (int i = 0; i < indent+p; ++i) { fputc('\t', stdout); } }
+	if (!no_indent) INDENT(0);
 	switch (v.type) {
 		case NULL_:
 			PUTS("null");
@@ -487,11 +489,11 @@ bool print_json(struct json_value v, int indent) {
 			if (v.array->values[0].type != NONE) {
 				PUTS("[\n");
 				for (size_t i = 0; v.array->values[i].type != NONE; ++i) {
-					print_json(v.array->values[i], indent+1);
+					print_json(v.array->values[i], indent+1, 0);
 					if (v.array->values[i+1].type != NONE) PUTC(',');
 					PUTC('\n');
 				}
-				INDENT();
+				INDENT(0);
 				PUTC(']');
 			} else {
 				PUTS("[]");
@@ -501,21 +503,21 @@ bool print_json(struct json_value v, int indent) {
 			if (v.object->entries[0].value.type != NONE) {
 				PUTS("{\n");
 				for (size_t i = 0; v.object->entries[i].value.type != NONE; ++i) {
-					print_json(v.object->entries[i].value, indent+1);
-					print_json(v.object->entries[i].value, indent+1);
+					INDENT(1);
+					print_string(v.object->entries[i].key);
+					PUTS(": ");
+					print_json(v.object->entries[i].value, indent+1, 1);
 					if (v.object->entries[i+1].value.type != NONE) PUTC(',');
 					PUTC('\n');
 				}
-				INDENT();
+				INDENT(0);
 				PUTC('}');
 			} else {
 				PUTS("{}");
 			}
 			return 1;
 		case STRING:
-			PUTC('"');
 			print_string(v.string);
-			PUTC('"');
 			return 1;
 		case NONE:
 			PUTS("error");
