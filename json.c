@@ -384,7 +384,6 @@ struct json_value parse_value(FILE *fp, enum json_value_type type) {
 						}
 						entries[object_len-1].key = v.string;
 						needs_colon = 1;
-						printf("here\n");
 					}
 				}
 			}
